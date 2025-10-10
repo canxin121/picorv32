@@ -28,11 +28,18 @@
 // `define DEBUGREGS
 // `define DEBUGASM
 // `define DEBUG
+// `define VERBOSE_DEBUG
 
 `ifdef DEBUG
   `define debug(debug_command) debug_command
 `else
   `define debug(debug_command)
+`endif
+
+`ifdef VERBOSE_DEBUG
+  `define verbose_debug(debug_command) debug_command
+`else
+  `define verbose_debug(debug_command)
 `endif
 
 `ifdef FORMAL
@@ -1335,7 +1342,11 @@ module picorv32 #(
 
 `ifndef PICORV32_REGS
 	always @(posedge clk) begin
-		if (resetn && cpuregs_write && latched_rd)
+		if (resetn && cpuregs_write && latched_rd) begin
+`ifdef VERBOSE_DEBUG
+			if (!(dbg_exception_latched || dbg_exception_event))
+				$display("REG_WRITE: x%-2d <= 0x%08x  (PC=0x%08x INSN=0x%08x)", latched_rd, cpuregs_wrdata, dbg_insn_addr, dbg_insn_opcode);
+`endif
 `ifdef PICORV32_TESTBUG_001
 			cpuregs[latched_rd ^ 1] <= cpuregs_wrdata;
 `elsif PICORV32_TESTBUG_002
@@ -1343,6 +1354,7 @@ module picorv32 #(
 `else
 			cpuregs[latched_rd] <= cpuregs_wrdata;
 `endif
+		end
 	end
 
 	always @* begin
@@ -1399,6 +1411,31 @@ module picorv32 #(
 
 	assign launch_next_insn = cpu_state == cpu_state_fetch && decoder_trigger && (!ENABLE_IRQ || irq_delay || irq_active || !(irq_pending & ~irq_mask));
 
+`ifdef VERBOSE_DEBUG
+	wire dbg_exception_misaligned_word = CATCH_MISALIGN && resetn &&
+			(mem_do_rdata || mem_do_wdata) &&
+			(mem_wordsize == 0 && |reg_op1[1:0]);
+	wire dbg_exception_misaligned_half = CATCH_MISALIGN && resetn &&
+			(mem_do_rdata || mem_do_wdata) &&
+			(mem_wordsize == 1 && reg_op1[0]);
+	wire dbg_exception_misaligned_instr = CATCH_MISALIGN && resetn && mem_do_rinst &&
+			(COMPRESSED_ISA ? reg_pc[0] : |reg_pc[1:0]);
+	wire dbg_exception_trap_no_pcpi = (cpu_state == cpu_state_ld_rs1) && !WITH_PCPI && instr_trap;
+	wire dbg_exception_pcpi_ld_rs1 = (cpu_state == cpu_state_ld_rs1) && WITH_PCPI && ENABLE_REGS_DUALPORT &&
+			!pcpi_int_ready && CATCH_ILLINSN && (pcpi_timeout || instr_ecall_ebreak);
+	wire dbg_exception_pcpi_exec = (cpu_state == cpu_state_exec) && WITH_PCPI &&
+			CATCH_ILLINSN && (pcpi_timeout || instr_ecall_ebreak);
+	wire dbg_exception_event = dbg_exception_misaligned_word || dbg_exception_misaligned_half ||
+			dbg_exception_misaligned_instr || dbg_exception_trap_no_pcpi ||
+			dbg_exception_pcpi_ld_rs1 || dbg_exception_pcpi_exec;
+	reg dbg_exception_latched;
+	wire [31:0] dbg_mem_write_addr = reg_op1 + decoded_imm;
+	wire dbg_mem_write_misaligned = CATCH_MISALIGN && resetn &&
+			((instr_sw && |dbg_mem_write_addr[1:0]) ||
+			 (instr_sh && dbg_mem_write_addr[0]));
+	wire dbg_suppress_mem_write = dbg_exception_latched || dbg_exception_event || dbg_mem_write_misaligned;
+`endif
+
 	always @(posedge clk) begin
 		trap <= 0;
 		reg_sh <= 'bx;
@@ -1454,6 +1491,15 @@ module picorv32 #(
 		if (!ENABLE_TRACE)
 			trace_data <= 'bx;
 
+`ifdef VERBOSE_DEBUG
+		if (!resetn)
+			dbg_exception_latched <= 0;
+		else if (launch_next_insn)
+			dbg_exception_latched <= 0;
+		else if (dbg_exception_event)
+			dbg_exception_latched <= 1;
+`endif
+
 		if (!resetn) begin
 			reg_pc <= PROGADDR_RESET;
 			reg_next_pc <= PROGADDR_RESET;
@@ -1485,6 +1531,7 @@ module picorv32 #(
 		(* parallel_case, full_case *)
 		case (cpu_state)
 			cpu_state_trap: begin
+				`verbose_debug($display("TRAP: Entering trap state (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 				trap <= 1;
 			end
 
@@ -1605,6 +1652,7 @@ module picorv32 #(
 								if (CATCH_ILLINSN && (pcpi_timeout || instr_ecall_ebreak)) begin
 									pcpi_valid <= 0;
 									`debug($display("EBREAK OR UNSUPPORTED INSN AT 0x%08x", reg_pc);)
+									`verbose_debug($display("EXCEPTION: EBREAK/UNSUPPORTED (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 									if (ENABLE_IRQ && !irq_mask[irq_ebreak] && !irq_active) begin
 										next_irq_pending[irq_ebreak] = 1;
 										cpu_state <= cpu_state_fetch;
@@ -1616,6 +1664,7 @@ module picorv32 #(
 							end
 						end else begin
 							`debug($display("EBREAK OR UNSUPPORTED INSN AT 0x%08x", reg_pc);)
+							`verbose_debug($display("EXCEPTION: EBREAK/UNSUPPORTED (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 							if (ENABLE_IRQ && !irq_mask[irq_ebreak] && !irq_active) begin
 								next_irq_pending[irq_ebreak] = 1;
 								cpu_state <= cpu_state_fetch;
@@ -1866,6 +1915,16 @@ module picorv32 #(
 							trace_valid <= 1;
 							trace_data <= (irq_active ? TRACE_IRQ : 0) | TRACE_ADDR | ((reg_op1 + decoded_imm) & 32'hffffffff);
 						end
+`ifdef VERBOSE_DEBUG
+						if (!dbg_suppress_mem_write) begin
+							if (instr_sb)
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%02x SIZE=1 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2[7:0], dbg_insn_addr, dbg_insn_opcode);
+							else if (instr_sh)
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%04x SIZE=2 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2[15:0], dbg_insn_addr, dbg_insn_opcode);
+							else
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%08x SIZE=4 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2, dbg_insn_addr, dbg_insn_opcode);
+						end
+`endif
 						reg_op1 <= reg_op1 + decoded_imm;
 						set_mem_do_wdata = 1;
 					end
@@ -1922,6 +1981,7 @@ module picorv32 #(
 		if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin
 			if (mem_wordsize == 0 && reg_op1[1:0] != 0) begin
 				`debug($display("MISALIGNED WORD: 0x%08x", reg_op1);)
+				`verbose_debug($display("EXCEPTION: MISALIGNED_WORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 					next_irq_pending[irq_buserror] = 1;
 				end else
@@ -1929,6 +1989,7 @@ module picorv32 #(
 			end
 			if (mem_wordsize == 1 && reg_op1[0] != 0) begin
 				`debug($display("MISALIGNED HALFWORD: 0x%08x", reg_op1);)
+				`verbose_debug($display("EXCEPTION: MISALIGNED_HALFWORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 					next_irq_pending[irq_buserror] = 1;
 				end else
@@ -1937,6 +1998,7 @@ module picorv32 #(
 		end
 		if (CATCH_MISALIGN && resetn && mem_do_rinst && (COMPRESSED_ISA ? reg_pc[0] : |reg_pc[1:0])) begin
 			`debug($display("MISALIGNED INSTRUCTION: 0x%08x", reg_pc);)
+			`verbose_debug($display("EXCEPTION: MISALIGNED_INSTRUCTION (PC=0x%08x)", reg_pc);)
 			if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 				next_irq_pending[irq_buserror] = 1;
 			end else

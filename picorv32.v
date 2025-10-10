@@ -28,11 +28,18 @@
 // `define DEBUGREGS
 // `define DEBUGASM
 // `define DEBUG
+// `define VERBOSE_DEBUG
 
 `ifdef DEBUG
   `define debug(debug_command) debug_command
 `else
   `define debug(debug_command)
+`endif
+
+`ifdef VERBOSE_DEBUG
+  `define verbose_debug(debug_command) debug_command
+`else
+  `define verbose_debug(debug_command)
 `endif
 
 `ifdef FORMAL
@@ -1335,7 +1342,8 @@ module picorv32 #(
 
 `ifndef PICORV32_REGS
 	always @(posedge clk) begin
-		if (resetn && cpuregs_write && latched_rd)
+		if (resetn && cpuregs_write && latched_rd) begin
+			`verbose_debug($display("REG_WRITE: x%-2d <= 0x%08x  (PC=0x%08x INSN=0x%08x)", latched_rd, cpuregs_wrdata, dbg_insn_addr, dbg_insn_opcode);)
 `ifdef PICORV32_TESTBUG_001
 			cpuregs[latched_rd ^ 1] <= cpuregs_wrdata;
 `elsif PICORV32_TESTBUG_002
@@ -1343,6 +1351,7 @@ module picorv32 #(
 `else
 			cpuregs[latched_rd] <= cpuregs_wrdata;
 `endif
+		end
 	end
 
 	always @* begin
@@ -1485,6 +1494,7 @@ module picorv32 #(
 		(* parallel_case, full_case *)
 		case (cpu_state)
 			cpu_state_trap: begin
+				`verbose_debug($display("TRAP: Entering trap state (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 				trap <= 1;
 			end
 
@@ -1605,6 +1615,7 @@ module picorv32 #(
 								if (CATCH_ILLINSN && (pcpi_timeout || instr_ecall_ebreak)) begin
 									pcpi_valid <= 0;
 									`debug($display("EBREAK OR UNSUPPORTED INSN AT 0x%08x", reg_pc);)
+									`verbose_debug($display("EXCEPTION: EBREAK/UNSUPPORTED (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 									if (ENABLE_IRQ && !irq_mask[irq_ebreak] && !irq_active) begin
 										next_irq_pending[irq_ebreak] = 1;
 										cpu_state <= cpu_state_fetch;
@@ -1616,6 +1627,7 @@ module picorv32 #(
 							end
 						end else begin
 							`debug($display("EBREAK OR UNSUPPORTED INSN AT 0x%08x", reg_pc);)
+							`verbose_debug($display("EXCEPTION: EBREAK/UNSUPPORTED (PC=0x%08x INSN=0x%08x)", reg_pc, dbg_insn_opcode);)
 							if (ENABLE_IRQ && !irq_mask[irq_ebreak] && !irq_active) begin
 								next_irq_pending[irq_ebreak] = 1;
 								cpu_state <= cpu_state_fetch;
@@ -1866,6 +1878,14 @@ module picorv32 #(
 							trace_valid <= 1;
 							trace_data <= (irq_active ? TRACE_IRQ : 0) | TRACE_ADDR | ((reg_op1 + decoded_imm) & 32'hffffffff);
 						end
+						`verbose_debug(
+							if (instr_sb)
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%02x SIZE=1 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2[7:0], dbg_insn_addr, dbg_insn_opcode);
+							else if (instr_sh)
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%04x SIZE=2 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2[15:0], dbg_insn_addr, dbg_insn_opcode);
+							else
+								$display("MEM_WRITE: ADDR=0x%08x DATA=0x%08x SIZE=4 (PC=0x%08x INSN=0x%08x)", reg_op1 + decoded_imm, reg_op2, dbg_insn_addr, dbg_insn_opcode);
+						)
 						reg_op1 <= reg_op1 + decoded_imm;
 						set_mem_do_wdata = 1;
 					end
@@ -1922,6 +1942,7 @@ module picorv32 #(
 		if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin
 			if (mem_wordsize == 0 && reg_op1[1:0] != 0) begin
 				`debug($display("MISALIGNED WORD: 0x%08x", reg_op1);)
+				`verbose_debug($display("EXCEPTION: MISALIGNED_WORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 					next_irq_pending[irq_buserror] = 1;
 				end else
@@ -1929,6 +1950,7 @@ module picorv32 #(
 			end
 			if (mem_wordsize == 1 && reg_op1[0] != 0) begin
 				`debug($display("MISALIGNED HALFWORD: 0x%08x", reg_op1);)
+				`verbose_debug($display("EXCEPTION: MISALIGNED_HALFWORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 					next_irq_pending[irq_buserror] = 1;
 				end else
@@ -1937,6 +1959,7 @@ module picorv32 #(
 		end
 		if (CATCH_MISALIGN && resetn && mem_do_rinst && (COMPRESSED_ISA ? reg_pc[0] : |reg_pc[1:0])) begin
 			`debug($display("MISALIGNED INSTRUCTION: 0x%08x", reg_pc);)
+			`verbose_debug($display("EXCEPTION: MISALIGNED_INSTRUCTION (PC=0x%08x)", reg_pc);)
 			if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
 				next_irq_pending[irq_buserror] = 1;
 			end else

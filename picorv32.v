@@ -1980,6 +1980,12 @@ module picorv32 #(
 
 		if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin
 			if (mem_wordsize == 0 && reg_op1[1:0] != 0) begin
+				latched_store <= 0;
+				latched_stalu <= 0;
+				latched_is_lu <= 0;
+				latched_is_lh <= 0;
+				latched_is_lb <= 0;
+				latched_rd <= 0;
 				`debug($display("MISALIGNED WORD: 0x%08x", reg_op1);)
 				`verbose_debug($display("EXCEPTION: MISALIGNED_WORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin
@@ -1988,6 +1994,12 @@ module picorv32 #(
 					cpu_state <= cpu_state_trap;
 			end
 			if (mem_wordsize == 1 && reg_op1[0] != 0) begin
+				latched_store <= 0;
+				latched_stalu <= 0;
+				latched_is_lu <= 0;
+				latched_is_lh <= 0;
+				latched_is_lb <= 0;
+				latched_rd <= 0;
 				`debug($display("MISALIGNED HALFWORD: 0x%08x", reg_op1);)
 				`verbose_debug($display("EXCEPTION: MISALIGNED_HALFWORD ADDR=0x%08x (PC=0x%08x INSN=0x%08x)", reg_op1, reg_pc, dbg_insn_opcode);)
 				if (ENABLE_IRQ && !irq_mask[irq_buserror] && !irq_active) begin

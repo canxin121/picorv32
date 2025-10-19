@@ -580,7 +580,7 @@ module picorv32 #(
 		end else begin
 			if (mem_la_read || mem_la_write) begin
 				mem_addr <= mem_la_addr;
-				mem_wstrb <= mem_la_wstrb & {4{mem_la_write}};
+				mem_wstrb <= (store_misaligned ? 4'b0000 : mem_la_wstrb) & {4{mem_la_write}};
 			end
 			if (mem_la_write) begin
 				mem_wdata <= mem_la_wdata;
@@ -1411,6 +1411,10 @@ module picorv32 #(
 
 	assign launch_next_insn = cpu_state == cpu_state_fetch && decoder_trigger && (!ENABLE_IRQ || irq_delay || irq_active || !(irq_pending & ~irq_mask));
 
+	wire [31:0] mem_write_addr = reg_op1 + decoded_imm;
+	wire store_misaligned = CATCH_MISALIGN && resetn &&
+			((instr_sw && |mem_write_addr[1:0]) ||
+			 (instr_sh && mem_write_addr[0]));
 `ifdef VERBOSE_DEBUG
 	wire dbg_exception_misaligned_word = CATCH_MISALIGN && resetn &&
 			(mem_do_rdata || mem_do_wdata) &&
@@ -1429,10 +1433,8 @@ module picorv32 #(
 			dbg_exception_misaligned_instr || dbg_exception_trap_no_pcpi ||
 			dbg_exception_pcpi_ld_rs1 || dbg_exception_pcpi_exec;
 	reg dbg_exception_latched;
-	wire [31:0] dbg_mem_write_addr = reg_op1 + decoded_imm;
-	wire dbg_mem_write_misaligned = CATCH_MISALIGN && resetn &&
-			((instr_sw && |dbg_mem_write_addr[1:0]) ||
-			 (instr_sh && dbg_mem_write_addr[0]));
+	wire [31:0] dbg_mem_write_addr = mem_write_addr;
+	wire dbg_mem_write_misaligned = store_misaligned;
 	wire dbg_suppress_mem_write = dbg_exception_latched || dbg_exception_event || dbg_mem_write_misaligned;
 `endif
 

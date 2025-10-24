@@ -573,7 +573,7 @@ module picorv32 #(
 		end else begin
 			if (mem_la_read || mem_la_write) begin
 				mem_addr <= mem_la_addr;
-				mem_wstrb <= mem_la_wstrb & {4{mem_la_write}};
+				mem_wstrb <= (store_misaligned ? 4'b0000 : mem_la_wstrb) & {4{mem_la_write}};
 			end
 			if (mem_la_write) begin
 				mem_wdata <= mem_la_wdata;
@@ -1398,6 +1398,11 @@ module picorv32 #(
 `endif
 
 	assign launch_next_insn = cpu_state == cpu_state_fetch && decoder_trigger && (!ENABLE_IRQ || irq_delay || irq_active || !(irq_pending & ~irq_mask));
+
+	wire [31:0] mem_write_addr = reg_op1 + decoded_imm;
+	wire store_misaligned = CATCH_MISALIGN && resetn &&
+			((instr_sw && |mem_write_addr[1:0]) ||
+			 (instr_sh && mem_write_addr[0]));
 
 	always @(posedge clk) begin
 		trap <= 0;
